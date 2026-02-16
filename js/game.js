@@ -34,7 +34,7 @@ export const Game = {
     },
 
     onInit(data) {
-        console.log("游戏初始化:", data);
+        console.log("初始化:", data);
         Store.gameStarted = true;
         Store.turnIndex = 0;
         Store.gameQueue = [];
@@ -55,11 +55,10 @@ export const Game = {
 
     playCard(cardUid) {
         const curPlayer = Store.players[Store.turnIndex];
-        // 安全检查：防止 curPlayer 未定义导致报错
-        if (!curPlayer) return console.error("当前回合玩家未定义!");
-        
+        if (!curPlayer) return;
         if (curPlayer.id !== Network.myId) return UI.log("⚠️ 还没轮到你！");
 
+        // 如果已经在选择中，点击手牌则取消选择
         if (this.pendingCard) {
             this.pendingCard = null;
             UI.log("已取消选择。");
@@ -70,14 +69,18 @@ export const Game = {
         const card = Store.myHand.find(c => c.uid === cardUid);
         if (!card) return;
 
-        // 特殊技能交互
+        // --- 鹦鹉逻辑 ---
         if (card.id === 'parrot' && Store.gameQueue.length > 0) {
             this.pendingCard = card;
             UI.log("🦜 鹦鹉：请点击队列中的动物！");
+            
+            // 【关键修复】必须刷新队列，这样队列里的卡片才会变成“可点击状态”
+            UI.renderQueue(Store.gameQueue, Store.players); 
             UI.renderHand(Store.myHand, Store.players.find(p=>p.id===Network.myId).colorIdx, true);
             return; 
         }
 
+        // --- 袋鼠逻辑 ---
         if (card.id === 'kanga') {
             let jump = prompt("🦘 袋鼠：输入 1 或 2 跳过", "1");
             if (jump !== "1" && jump !== "2") return; 
@@ -85,14 +88,21 @@ export const Game = {
             return;
         }
 
+        // 普通出牌
         this.executeMove(card, {});
     },
 
     onQueueClick(targetUid) {
+        // 只有在 pendingCard (鹦鹉模式) 下才响应
         if (!this.pendingCard) return;
-        const targetExists = Store.gameQueue.find(c => c.uid === targetUid);
-        if (!targetExists) return;
 
+        const targetExists = Store.gameQueue.find(c => c.uid === targetUid);
+        if (!targetExists) {
+            UI.log("❌ 目标不存在");
+            return;
+        }
+
+        // 执行鹦鹉的出牌，带上 targetUid
         this.executeMove(this.pendingCard, { targetUid: targetUid });
         this.pendingCard = null;
     },
@@ -115,32 +125,25 @@ export const Game = {
         this.processMove(data);
     },
 
-    // 核心处理逻辑 (带防崩溃保护)
     processMove(data) {
         try {
-            console.log("处理移动:", data);
-
-            // 1. 处理手牌与补牌
+            // 1. 手牌处理
             if (data.ownerId === Network.myId) {
                 const idx = Store.myHand.findIndex(c => c.uid === data.cardUid);
                 if (idx > -1) Store.myHand.splice(idx, 1);
-                // 只有当牌库有牌，且手牌不足4张时才补（防止溢出）
                 if (Store.myDeck.length > 0 && Store.myHand.length < 4) {
                     Store.myHand.push(Store.myDeck.pop());
                 }
             } else {
                 const p = Store.players.find(p => p.id === data.ownerId);
-                if (p) {
-                    // 对方出牌动画日志
-                    UI.log(`🃏 ${p.nick} 打出了 [${data.power}] ${this._getName(data.cardId)}`);
-                }
+                if (p) UI.log(`🃏 ${p.nick} 打出了 [${data.power}] ${this._getName(data.cardId)}`);
             }
 
             // 2. 动物入场
             const newCard = {
                 uid: data.cardUid, 
                 id: data.cardId, 
-                power: data.power, 
+                power: Number(data.power), // 【强制类型转换】防止字符串混入
                 ownerId: data.ownerId
             };
             Store.gameQueue.push(newCard);
@@ -148,109 +151,37 @@ export const Game = {
             // 3. 触发技能
             this.applySkill(newCard, data.extra);
 
-            // 4. 检查门禁
+            // 4. 门禁
             this.checkGate();
 
-            // 5. 切换回合
+            // 5. 换人 & 刷新
             this.nextTurn();
-            
-            // 6. 刷新界面
             this.updateBoard();
 
         } catch (err) {
-            console.error("❌ 游戏逻辑严重错误:", err);
-            UI.log("❌ 游戏出错，请按F12查看控制台");
+            console.error("❌ 逻辑错误:", err);
+            UI.log("❌ 游戏出错，请查看控制台");
         }
     },
 
     applySkill(card, extra) {
         let queue = Store.gameQueue;
         
+        // 🦨 臭鼬逻辑 (修复版)
         if (card.id === 'skunk') {
             let maxVal = -1;
+            // 找最大值
             queue.forEach(c => {
-                if (c.id !== 'skunk' && c.power > maxVal) maxVal = c.power;
+                // 确保 power 是数字进行比较
+                const p = Number(c.power);
+                if (c.id !== 'skunk' && p > maxVal) maxVal = p;
             });
-            if (maxVal > 1) { // 只有比1大才熏走
-                const keep = queue.filter(c => c.power !== maxVal || c.id === 'skunk');
-                const kicked = queue.filter(c => c.power === maxVal && c.id !== 'skunk');
-                Store.gameQueue = keep;
-                if (kicked.length > 0) UI.log(`💨 臭鼬熏走了: ${kicked.map(v=>v.power).join(',')}`);
-            }
-        }
-        else if (card.id === 'parrot' && extra && extra.targetUid) {
-            const idx = queue.findIndex(c => c.uid === extra.targetUid);
-            if (idx !== -1) {
-                const v = queue[idx];
-                queue.splice(idx, 1);
-                UI.log(`🦜 鹦鹉骂跑了 [${v.power}] ${this._getName(v.id)}`);
-            }
-        }
-        else if (card.id === 'kanga' && extra && extra.jump) {
-            const kangaIdx = queue.length - 1;
-            let targetIdx = kangaIdx - extra.jump;
-            if (targetIdx < 0) targetIdx = 0;
-            
-            if (targetIdx < kangaIdx) {
-                const kanga = queue.pop();
-                queue.splice(targetIdx, 0, kanga);
-                UI.log(`🦘 袋鼠往前跳了 ${extra.jump} 步`);
-            }
-        }
-    },
 
-    checkGate() {
-        if (Store.gameQueue.length === 5) {
-            UI.log("🚪 门口满了！结算中...");
-            const toBar = Store.gameQueue.slice(0, 2);
-            const remain = Store.gameQueue.slice(2, 4);
-            const toTrash = Store.gameQueue.slice(4, 5);
+            console.log(`🦨 臭鼬判定: 最大力量是 ${maxVal}`);
 
-            toBar.forEach(c => UI.log(`🍻 [${c.power}] ${this._getName(c.id)} 进酒吧！`));
-            toTrash.forEach(c => UI.log(`🗑️ [${c.power}] ${this._getName(c.id)} 被踢出！`));
-
-            Store.gameQueue = remain; 
-        }
-    },
-
-    nextTurn() {
-        if (Store.players.length === 0) return;
-        Store.turnIndex = (Store.turnIndex + 1) % Store.players.length;
-        console.log("轮次切换到:", Store.turnIndex);
-    },
-
-    updateBoard() {
-        const curPlayer = Store.players[Store.turnIndex];
-        const isMyTurn = curPlayer && curPlayer.id === Network.myId;
-        
-        UI.renderQueue(Store.gameQueue, Store.players);
-        
-        const me = Store.players.find(p => p.id === Network.myId);
-        UI.renderHand(Store.myHand, me ? me.colorIdx : 0, isMyTurn);
-        
-        UI.renderInGamePlayers(Store.players, Store.turnIndex);
-        if (curPlayer) {
-            UI.updateTurnInfo(curPlayer.nick, isMyTurn);
-        }
-        UI.updateDeckInfo(Store.myDeck.length);
-    },
-    
-    updateReadyUI() {
-        if (Store.amIHost) {
-            const btnStart = document.getElementById('btn-start');
-            btnStart.disabled = !Store.isReady;
-            if(Store.isReady) btnStart.innerText = "🚀 开始游戏";
-            else btnStart.innerText = "✋ 房主请先准备";
-        } else {
-            const btnReady = document.getElementById('btn-ready');
-            btnReady.innerText = Store.isReady ? "取消准备" : "✋ 准备";
-            btnReady.style.backgroundColor = Store.isReady ? "#bdc3c7" : "#f1c40f";
-        }
-    },
-
-    // 内部帮助函数，获取卡牌中文名
-    _getName(id) {
-        const map = { skunk:'臭鼬', parrot:'鹦鹉', kanga:'袋鼠', monkey:'猴子', chame:'变色龙', seal:'海豹', zebra:'斑马', giraffe:'长颈鹿', snake:'蛇', croc:'河马', hippo:'鳄鱼', lion:'狮子' };
-        return map[id] || id;
-    }
-};
+            // 只有最大值大于1才生效
+            if (maxVal > 1) {
+                // 筛选：保留 (力量不等于最大值) 或者 (是臭鼬自己)
+                // 注意：这里用 Number() 确保比较准确
+                const keep = queue.filter(c => Number(c.power) !== maxVal || c.id === 'skunk');
+                const kicked = queue.filter(c =>
