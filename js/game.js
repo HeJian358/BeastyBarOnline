@@ -4,7 +4,6 @@ import { UI } from './ui.js';
 import { Store } from './store.js';
 
 export const Game = {
-    // 临时存储待打出的牌（用于鹦鹉选目标）
     pendingCard: null,
 
     toggleReady() {
@@ -35,6 +34,7 @@ export const Game = {
     },
 
     onInit(data) {
+        console.log("游戏初始化:", data);
         Store.gameStarted = true;
         Store.turnIndex = 0;
         Store.gameQueue = [];
@@ -53,9 +53,11 @@ export const Game = {
         UI.log("🚀 游戏开始！");
     },
 
-    // 1. 玩家点击手牌 (入口)
     playCard(cardUid) {
         const curPlayer = Store.players[Store.turnIndex];
+        // 安全检查：防止 curPlayer 未定义导致报错
+        if (!curPlayer) return console.error("当前回合玩家未定义!");
+        
         if (curPlayer.id !== Network.myId) return UI.log("⚠️ 还没轮到你！");
 
         if (this.pendingCard) {
@@ -68,26 +70,24 @@ export const Game = {
         const card = Store.myHand.find(c => c.uid === cardUid);
         if (!card) return;
 
-        // --- 特殊技能交互 ---
+        // 特殊技能交互
         if (card.id === 'parrot' && Store.gameQueue.length > 0) {
             this.pendingCard = card;
-            UI.log("🦜 鹦鹉技能：请点击队列中的一只动物将其踢出！");
+            UI.log("🦜 鹦鹉：请点击队列中的动物！");
             UI.renderHand(Store.myHand, Store.players.find(p=>p.id===Network.myId).colorIdx, true);
             return; 
         }
 
         if (card.id === 'kanga') {
-            let jump = prompt("🦘 袋鼠技能：请输入 1 跳过一只，或 2 跳过两只", "1");
+            let jump = prompt("🦘 袋鼠：输入 1 或 2 跳过", "1");
             if (jump !== "1" && jump !== "2") return; 
             this.executeMove(card, { jump: parseInt(jump) });
             return;
         }
 
-        // 普通出牌
         this.executeMove(card, {});
     },
 
-    // 1.5 鹦鹉选择目标后触发
     onQueueClick(targetUid) {
         if (!this.pendingCard) return;
         const targetExists = Store.gameQueue.find(c => c.uid === targetUid);
@@ -97,7 +97,6 @@ export const Game = {
         this.pendingCard = null;
     },
 
-    // 2. 执行并广播 (构造数据包)
     executeMove(card, extraData) {
         const moveData = {
             type: 'GAME_MOVE',
@@ -107,132 +106,122 @@ export const Game = {
             ownerId: Network.myId,
             extra: extraData || {}
         };
-
-        // A. 告诉别人
         Network.broadcast(moveData);
-
-        // B. 自己立刻执行 (重点！走同一套逻辑)
         this.processMove(moveData);
     },
 
-    // 3. 收到网络消息
     onMove(data) {
-        // 如果收到的是自己的包，忽略（因为步骤2里已经执行过了，避免重复）
         if (data.ownerId === Network.myId) return;
-        
         this.processMove(data);
     },
 
-    // 4. 【核心】统一处理逻辑 (无论是谁出的牌，都走这里)
+    // 核心处理逻辑 (带防崩溃保护)
     processMove(data) {
-        // --- 4.1 处理手牌与补牌 ---
-        if (data.ownerId === Network.myId) {
-            // 如果是我出的：从手里删掉，从牌库摸一张
-            const idx = Store.myHand.findIndex(c => c.uid === data.cardUid);
-            if (idx > -1) Store.myHand.splice(idx, 1);
-            if (Store.myDeck.length > 0) Store.myHand.push(Store.myDeck.pop());
-        } else {
-            // 如果是别人出的：
-            const p = Store.players.find(p => p.id === data.ownerId);
-            if (p) {
-                // 【修复】不减手牌数！因为规则是出一补一，始终是4张
-                // 除非未来实现了牌库耗尽逻辑，目前暂时保持不变
-                UI.log(`🃏 ${p.nick} 打出了 [${data.power}] ${getCardName(data.cardId)}`);
+        try {
+            console.log("处理移动:", data);
+
+            // 1. 处理手牌与补牌
+            if (data.ownerId === Network.myId) {
+                const idx = Store.myHand.findIndex(c => c.uid === data.cardUid);
+                if (idx > -1) Store.myHand.splice(idx, 1);
+                // 只有当牌库有牌，且手牌不足4张时才补（防止溢出）
+                if (Store.myDeck.length > 0 && Store.myHand.length < 4) {
+                    Store.myHand.push(Store.myDeck.pop());
+                }
+            } else {
+                const p = Store.players.find(p => p.id === data.ownerId);
+                if (p) {
+                    // 对方出牌动画日志
+                    UI.log(`🃏 ${p.nick} 打出了 [${data.power}] ${this._getName(data.cardId)}`);
+                }
             }
+
+            // 2. 动物入场
+            const newCard = {
+                uid: data.cardUid, 
+                id: data.cardId, 
+                power: data.power, 
+                ownerId: data.ownerId
+            };
+            Store.gameQueue.push(newCard);
+
+            // 3. 触发技能
+            this.applySkill(newCard, data.extra);
+
+            // 4. 检查门禁
+            this.checkGate();
+
+            // 5. 切换回合
+            this.nextTurn();
+            
+            // 6. 刷新界面
+            this.updateBoard();
+
+        } catch (err) {
+            console.error("❌ 游戏逻辑严重错误:", err);
+            UI.log("❌ 游戏出错，请按F12查看控制台");
         }
-
-        // --- 4.2 动物入场 ---
-        // 【修复】之前这里漏了把牌加入队列
-        const newCard = {
-            uid: data.cardUid, 
-            id: data.cardId, 
-            power: data.power, 
-            ownerId: data.ownerId
-        };
-        Store.gameQueue.push(newCard); // 先加入队尾
-
-        // --- 4.3 触发技能 ---
-        this.applySkill(newCard, data.extra);
-
-        // --- 4.4 检查门禁 ---
-        this.checkGate();
-
-        // --- 4.5 切换回合 & 刷新 ---
-        this.nextTurn();
-        this.updateBoard();
     },
 
-    // 🦁 技能实现 🦁
     applySkill(card, extra) {
         let queue = Store.gameQueue;
         
-        // 1. 🦨 臭鼬：淘汰最大 (非臭鼬)
         if (card.id === 'skunk') {
             let maxVal = -1;
-            // 找最大值
             queue.forEach(c => {
                 if (c.id !== 'skunk' && c.power > maxVal) maxVal = c.power;
             });
-            // 只有当最大值大于臭鼬(1)时才生效 (防止场上只有臭鼬自己)
-            if (maxVal > 1) {
-                // 筛选出要留下的：(不是最大值) 或者 (是最大值但是只臭鼬)
+            if (maxVal > 1) { // 只有比1大才熏走
                 const keep = queue.filter(c => c.power !== maxVal || c.id === 'skunk');
                 const kicked = queue.filter(c => c.power === maxVal && c.id !== 'skunk');
-                
                 Store.gameQueue = keep;
                 if (kicked.length > 0) UI.log(`💨 臭鼬熏走了: ${kicked.map(v=>v.power).join(',')}`);
             }
         }
-
-        // 2. 🦜 鹦鹉：指定淘汰
         else if (card.id === 'parrot' && extra && extra.targetUid) {
             const idx = queue.findIndex(c => c.uid === extra.targetUid);
             if (idx !== -1) {
                 const v = queue[idx];
                 queue.splice(idx, 1);
-                UI.log(`🦜 鹦鹉骂跑了 [${v.power}] ${getCardName(v.id)}`);
+                UI.log(`🦜 鹦鹉骂跑了 [${v.power}] ${this._getName(v.id)}`);
             }
         }
-
-        // 3. 🦘 袋鼠：插队
         else if (card.id === 'kanga' && extra && extra.jump) {
-            // 刚入场的袋鼠肯定在最后
             const kangaIdx = queue.length - 1;
-            // 计算目标位置
             let targetIdx = kangaIdx - extra.jump;
             if (targetIdx < 0) targetIdx = 0;
             
             if (targetIdx < kangaIdx) {
-                const kanga = queue.pop(); // 取出
-                queue.splice(targetIdx, 0, kanga); // 插入
+                const kanga = queue.pop();
+                queue.splice(targetIdx, 0, kanga);
                 UI.log(`🦘 袋鼠往前跳了 ${extra.jump} 步`);
             }
         }
     },
 
-    // 🚪 门禁：满5结算
     checkGate() {
         if (Store.gameQueue.length === 5) {
-            UI.log("🚪 门口满了(5人)，开始结算！");
-            
-            const toBar = Store.gameQueue.slice(0, 2);   // 前2进酒吧
-            const remain = Store.gameQueue.slice(2, 4);  // 中2留守
-            const toTrash = Store.gameQueue.slice(4, 5); // 尾1踢掉
+            UI.log("🚪 门口满了！结算中...");
+            const toBar = Store.gameQueue.slice(0, 2);
+            const remain = Store.gameQueue.slice(2, 4);
+            const toTrash = Store.gameQueue.slice(4, 5);
 
-            toBar.forEach(c => UI.log(`🍻 [${c.power}] ${getCardName(c.id)} 进酒吧了！`));
-            toTrash.forEach(c => UI.log(`🗑️ [${c.power}] ${getCardName(c.id)} 被踢掉了！`));
+            toBar.forEach(c => UI.log(`🍻 [${c.power}] ${this._getName(c.id)} 进酒吧！`));
+            toTrash.forEach(c => UI.log(`🗑️ [${c.power}] ${this._getName(c.id)} 被踢出！`));
 
             Store.gameQueue = remain; 
         }
     },
 
     nextTurn() {
+        if (Store.players.length === 0) return;
         Store.turnIndex = (Store.turnIndex + 1) % Store.players.length;
+        console.log("轮次切换到:", Store.turnIndex);
     },
 
     updateBoard() {
         const curPlayer = Store.players[Store.turnIndex];
-        const isMyTurn = curPlayer.id === Network.myId;
+        const isMyTurn = curPlayer && curPlayer.id === Network.myId;
         
         UI.renderQueue(Store.gameQueue, Store.players);
         
@@ -240,7 +229,9 @@ export const Game = {
         UI.renderHand(Store.myHand, me ? me.colorIdx : 0, isMyTurn);
         
         UI.renderInGamePlayers(Store.players, Store.turnIndex);
-        UI.updateTurnInfo(curPlayer.nick, isMyTurn);
+        if (curPlayer) {
+            UI.updateTurnInfo(curPlayer.nick, isMyTurn);
+        }
         UI.updateDeckInfo(Store.myDeck.length);
     },
     
@@ -255,10 +246,11 @@ export const Game = {
             btnReady.innerText = Store.isReady ? "取消准备" : "✋ 准备";
             btnReady.style.backgroundColor = Store.isReady ? "#bdc3c7" : "#f1c40f";
         }
+    },
+
+    // 内部帮助函数，获取卡牌中文名
+    _getName(id) {
+        const map = { skunk:'臭鼬', parrot:'鹦鹉', kanga:'袋鼠', monkey:'猴子', chame:'变色龙', seal:'海豹', zebra:'斑马', giraffe:'长颈鹿', snake:'蛇', croc:'河马', hippo:'鳄鱼', lion:'狮子' };
+        return map[id] || id;
     }
 };
-
-function getCardName(id) {
-    const map = { skunk:'臭鼬', parrot:'鹦鹉', kanga:'袋鼠', monkey:'猴子', chame:'变色龙', seal:'海豹', zebra:'斑马', giraffe:'长颈鹿', snake:'蛇', croc:'河马', hippo:'鳄鱼', lion:'狮子' };
-    return map[id] || id;
-}
