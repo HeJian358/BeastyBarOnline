@@ -6,7 +6,6 @@ export const Network = {
     // 防洪记录表
     floodHistory: new Map(),
 
-    // 【关键修改】这里增加了 onError 参数
     init(onOpen, onData, onError) {
         // 如果之前有旧连接，先销毁
         if (this.peer) {
@@ -14,11 +13,28 @@ export const Network = {
         }
 
         this.peer = new Peer({ 
-            debug: 2, // 2级日志，方便看问题
+            debug: 2, 
             config: {
-                'iceServers': [
+                iceServers: [
+                    // 1. Google 的 STUN 服务器
                     { urls: 'stun:stun.l.google.com:19302' },
-                    { urls: 'stun:stun1.l.google.com:19302' }
+                    
+                    // 2. OpenRelay 的免费 TURN 服务器 (穿墙关键)
+                    {
+                        urls: "turn:openrelay.metered.ca:80",
+                        username: "openrelayproject",
+                        credential: "openrelayproject"
+                    },
+                    {
+                        urls: "turn:openrelay.metered.ca:443",
+                        username: "openrelayproject",
+                        credential: "openrelayproject"
+                    },
+                    {
+                        urls: "turn:openrelay.metered.ca:443?transport=tcp",
+                        username: "openrelayproject",
+                        credential: "openrelayproject"
+                    }
                 ]
             }
         });
@@ -30,7 +46,7 @@ export const Network = {
 
         this.peer.on('connection', (conn) => this.handleConn(conn, onData));
         
-        // 【关键修复】这里把错误抛回给 UI，否则按钮会一直卡在"连接中"
+        // 错误处理
         this.peer.on('error', (err) => {
             console.error("PeerJS 报错:", err);
             if (onError) onError(err);
