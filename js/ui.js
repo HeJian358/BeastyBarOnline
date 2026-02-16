@@ -16,67 +16,57 @@ export const UI = {
         document.getElementById('game-board').style.display = 'block';
     },
 
-    // 大厅列表
     renderPlayerList: () => {
         const myId = Network.myId;
         const listEl = document.getElementById('player-status-list');
         let html = '';
-        
         const allIds = [myId, ...Store.playerStates.keys()].filter(id => id !== myId);
         allIds.unshift(myId); 
         const uniqueIds = [...new Set(allIds)];
-
         uniqueIds.forEach(id => {
             const nick = (id === myId) ? Store.myNick : (Store.nicks.get(id) || "连接中...");
             const state = Store.playerStates.get(id) || { isReady: false, isHost: false };
-            
-            if (id === myId) {
-                state.isReady = Store.isReady;
-                state.isHost = Store.amIHost;
-            }
-
+            if (id === myId) { state.isReady = Store.isReady; state.isHost = Store.amIHost; }
             const readyTag = state.isReady ? `<span class="tag ready">已就绪</span>` : `<span class="tag wait">等待中</span>`;
             const hostTag = state.isHost ? `<span class="tag host">房主</span>` : ``;
-
             html += `<li class="p-item"><span>${hostTag} ${nick} ${id === myId ? '(我)' : ''}</span>${readyTag}</li>`;
         });
-
         listEl.innerHTML = html;
         document.getElementById('p-count').innerText = uniqueIds.length;
         checkHostCanStart(uniqueIds);
     },
 
-    // 游戏内顶部状态栏
     renderInGamePlayers: (players, turnIndex) => {
         const bar = document.getElementById('in-game-players');
         if (!bar) return;
-
         bar.innerHTML = players.map((p, idx) => {
             const isTurn = (idx === turnIndex);
-            // 显示手牌数量
             const count = (p.id === Network.myId) ? Store.myHand.length : p.handCount;
             const statusText = isTurn ? "🤔 思考中..." : `剩余 ${count} 张`;
-            
-            return `
-                <div class="ig-player p-${p.colorIdx} ${isTurn ? 'active' : ''}">
+            return `<div class="ig-player p-${p.colorIdx} ${isTurn ? 'active' : ''}">
                     <div class="ig-nick">${p.nick} ${p.id === Network.myId ? '(我)' : ''}</div>
-                    <div class="ig-status">${statusText}</div>
-                </div>
-            `;
+                    <div class="ig-status">${statusText}</div></div>`;
         }).join('');
     },
 
-    // 【重点】渲染中间的排队队列
+    // 【修改】队列现在支持点击了（为了鹦鹉技能）
     renderQueue: (queue, players) => {
         const zone = document.getElementById('game-queue');
+        
+        // 如果正在选鹦鹉目标，给队列加个特殊样式提示用户
+        const isSelecting = (Game && Game.pendingCard);
+        if (isSelecting) zone.style.border = "2px dashed red";
+        else zone.style.border = "none";
+
         zone.innerHTML = queue.map(c => {
             const owner = players.find(p => p.id === c.ownerId);
-            // 如果还没加载完玩家信息，暂时用默认色
             const colorClass = owner ? `p-color-${owner.colorIdx}` : 'p-color-0';
             
-            // 简单的卡牌样式
+            // 如果正在选择模式，添加点击事件
+            const clickAttr = isSelecting ? `onclick="window.onQueueClick('${c.uid}')" style="cursor:pointer; border: 2px solid red;"` : '';
+
             return `
-                <div class="card ${colorClass}" style="width:60px; height:90px; margin-right:5px;">
+                <div class="card ${colorClass}" style="width:60px; height:90px; margin-right:5px;" ${clickAttr}>
                     <div style="font-size:1.4em; font-weight:bold;">${c.power}</div>
                     <div style="font-size:0.7em;">${c.id}</div>
                 </div>
@@ -84,13 +74,15 @@ export const UI = {
         }).join('');
     },
 
-    // 【重点】渲染我的手牌
     renderHand: (hand, myColorIdx, isMyTurn) => {
         const zone = document.getElementById('my-hand');
         
-        // 如果不是我的回合，整体变灰
-        const pointerStyle = isMyTurn ? 'cursor:pointer;' : 'cursor:not-allowed; opacity:0.6;';
+        // 如果正在选鹦鹉目标，手牌变灰，提示不能点
+        if (Game && Game.pendingCard) {
+            isMyTurn = false; 
+        }
 
+        const pointerStyle = isMyTurn ? 'cursor:pointer;' : 'cursor:not-allowed; opacity:0.6;';
         zone.innerHTML = hand.map(c => `
             <div class="card p-color-${myColorIdx}" 
                  style="${pointerStyle}"
@@ -105,7 +97,6 @@ export const UI = {
         const el = document.getElementById('turn-indicator');
         el.innerText = isMe ? `🟢 轮到你了！请出牌` : `⏳ 轮到 ${nick} 出牌`;
         el.style.color = isMe ? '#27ae60' : '#333';
-        // 如果是我的回合，让窗口闪烁或播放声音（后续可加）
     },
 
     updateDeckInfo: (count) => {
@@ -113,11 +104,9 @@ export const UI = {
     }
 };
 
-// 房主开始按钮检查
 function checkHostCanStart(allIds) {
     if (!Store.amIHost) return;
     const btn = document.getElementById('btn-start');
-    
     if (!Store.isReady) {
         btn.disabled = false; btn.innerText = "✋ 房主请先准备"; btn.style.background = "#f1c40f"; return;
     }
@@ -132,5 +121,6 @@ function checkHostCanStart(allIds) {
     }
 }
 
-// 绑定全局点击事件
 window.playCard = (uid) => { if(Game && Game.playCard) Game.playCard(uid); };
+// 【新增】鹦鹉选择目标的点击事件
+window.onQueueClick = (uid) => { if(Game && Game.onQueueClick) Game.onQueueClick(uid); };
