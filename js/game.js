@@ -38,7 +38,7 @@ export const Game = {
         Store.gameStarted = true;
         Store.turnIndex = 0;
         Store.gameQueue = [];
-        this.pendingCard = null; // 重置状态
+        this.pendingCard = null;
         
         Store.players = data.order.map((pid, idx) => ({
             id: pid, colorIdx: idx, nick: data.nicksMap[pid] || "未知玩家", handCount: 4
@@ -53,12 +53,11 @@ export const Game = {
         UI.log("🚀 游戏开始！");
     },
 
-    // 1. 玩家点击手牌
+    // 1. 玩家点击手牌 (入口)
     playCard(cardUid) {
         const curPlayer = Store.players[Store.turnIndex];
         if (curPlayer.id !== Network.myId) return UI.log("⚠️ 还没轮到你！");
 
-        // 如果之前正在等待选鹦鹉的目标，先取消（防止卡死）
         if (this.pendingCard) {
             this.pendingCard = null;
             UI.log("已取消选择。");
@@ -69,152 +68,161 @@ export const Game = {
         const card = Store.myHand.find(c => c.uid === cardUid);
         if (!card) return;
 
-        // --- 特殊卡牌逻辑分支 ---
-
-        // 🦜 鹦鹉：需要选择目标
+        // --- 特殊技能交互 ---
         if (card.id === 'parrot' && Store.gameQueue.length > 0) {
             this.pendingCard = card;
-            UI.log("🦜 请点击队列中的一只动物将其踢出！");
-            UI.renderHand(Store.myHand, Store.players.find(p=>p.id===Network.myId).colorIdx, true); // 刷新UI高亮
+            UI.log("🦜 鹦鹉技能：请点击队列中的一只动物将其踢出！");
+            UI.renderHand(Store.myHand, Store.players.find(p=>p.id===Network.myId).colorIdx, true);
             return; 
         }
 
-        // 🦘 袋鼠：需要输入跳几步
         if (card.id === 'kanga') {
-            // 简单处理：用浏览器自带弹窗询问 (后续可改为漂亮UI)
             let jump = prompt("🦘 袋鼠技能：请输入 1 跳过一只，或 2 跳过两只", "1");
-            if (jump !== "1" && jump !== "2") return; // 取消出牌
-            this.broadcastMove(card, { jump: parseInt(jump) });
+            if (jump !== "1" && jump !== "2") return; 
+            this.executeMove(card, { jump: parseInt(jump) });
             return;
         }
 
-        // 🦨 臭鼬 & 其他：直接出牌
-        this.broadcastMove(card, {});
+        // 普通出牌
+        this.executeMove(card, {});
     },
 
-    // 1.5 鹦鹉专属：点击队列触发
+    // 1.5 鹦鹉选择目标后触发
     onQueueClick(targetUid) {
         if (!this.pendingCard) return;
-        
-        // 只能点队列里的
         const targetExists = Store.gameQueue.find(c => c.uid === targetUid);
         if (!targetExists) return;
 
-        // 发送出牌指令 (带上 targetUid)
-        this.broadcastMove(this.pendingCard, { targetUid: targetUid });
-        this.pendingCard = null; // 清除状态
+        this.executeMove(this.pendingCard, { targetUid: targetUid });
+        this.pendingCard = null;
     },
 
-    // 2. 广播出牌动作
-    broadcastMove(card, extraData) {
-        Network.broadcast({
+    // 2. 执行并广播 (构造数据包)
+    executeMove(card, extraData) {
+        const moveData = {
             type: 'GAME_MOVE',
             cardUid: card.uid,
             cardId: card.id,
             power: card.power,
             ownerId: Network.myId,
-            extra: extraData // 携带技能参数(jump/targetUid)
-        });
-        
-        // 本地立刻执行
-        this.handleLocalMove(card);
+            extra: extraData || {}
+        };
+
+        // A. 告诉别人
+        Network.broadcast(moveData);
+
+        // B. 自己立刻执行 (重点！走同一套逻辑)
+        this.processMove(moveData);
     },
 
-    handleLocalMove(card) {
-        const idx = Store.myHand.findIndex(c => c.uid === card.uid);
-        if (idx > -1) Store.myHand.splice(idx, 1);
-        if (Store.myDeck.length > 0) Store.myHand.push(Store.myDeck.pop());
-    },
-
-    // 3. 收到网络包，处理所有逻辑 (入场 -> 技能 -> 门禁)
+    // 3. 收到网络消息
     onMove(data) {
-        // 更新手牌数显示
-        if (data.ownerId !== Network.myId) {
+        // 如果收到的是自己的包，忽略（因为步骤2里已经执行过了，避免重复）
+        if (data.ownerId === Network.myId) return;
+        
+        this.processMove(data);
+    },
+
+    // 4. 【核心】统一处理逻辑 (无论是谁出的牌，都走这里)
+    processMove(data) {
+        // --- 4.1 处理手牌与补牌 ---
+        if (data.ownerId === Network.myId) {
+            // 如果是我出的：从手里删掉，从牌库摸一张
+            const idx = Store.myHand.findIndex(c => c.uid === data.cardUid);
+            if (idx > -1) Store.myHand.splice(idx, 1);
+            if (Store.myDeck.length > 0) Store.myHand.push(Store.myDeck.pop());
+        } else {
+            // 如果是别人出的：
             const p = Store.players.find(p => p.id === data.ownerId);
             if (p) {
-                p.handCount--;
+                // 【修复】不减手牌数！因为规则是出一补一，始终是4张
+                // 除非未来实现了牌库耗尽逻辑，目前暂时保持不变
                 UI.log(`🃏 ${p.nick} 打出了 [${data.power}] ${getCardName(data.cardId)}`);
             }
         }
 
-        // --- A. 动物入场 ---
+        // --- 4.2 动物入场 ---
+        // 【修复】之前这里漏了把牌加入队列
         const newCard = {
-            uid: data.cardUid, id: data.cardId, power: data.power, ownerId: data.ownerId
+            uid: data.cardUid, 
+            id: data.cardId, 
+            power: data.power, 
+            ownerId: data.ownerId
         };
-        Store.gameQueue.push(newCard); // 默认排队尾
+        Store.gameQueue.push(newCard); // 先加入队尾
 
-        // --- B. 触发技能 ---
+        // --- 4.3 触发技能 ---
         this.applySkill(newCard, data.extra);
 
-        // --- C. 检查门禁 ---
+        // --- 4.4 检查门禁 ---
         this.checkGate();
 
-        // --- D. 切换回合 ---
+        // --- 4.5 切换回合 & 刷新 ---
         this.nextTurn();
         this.updateBoard();
     },
 
-    // 🦁 核心技能逻辑 🦁
+    // 🦁 技能实现 🦁
     applySkill(card, extra) {
-        const queue = Store.gameQueue;
+        let queue = Store.gameQueue;
         
-        // 1. 🦨 臭鼬：淘汰数字最大的 (除了臭鼬自己)
+        // 1. 🦨 臭鼬：淘汰最大 (非臭鼬)
         if (card.id === 'skunk') {
-            // 找最大值 (排除所有臭鼬 power=1)
             let maxVal = -1;
+            // 找最大值
             queue.forEach(c => {
                 if (c.id !== 'skunk' && c.power > maxVal) maxVal = c.power;
             });
-
-            if (maxVal > 0) {
-                const victims = queue.filter(c => c.power === maxVal && c.id !== 'skunk');
-                // 从队列移除
-                Store.gameQueue = queue.filter(c => c.power !== maxVal || c.id === 'skunk');
-                if (victims.length > 0) UI.log(`💨 臭鼬熏走了: ${victims.map(v=>v.power).join(',')}`);
+            // 只有当最大值大于臭鼬(1)时才生效 (防止场上只有臭鼬自己)
+            if (maxVal > 1) {
+                // 筛选出要留下的：(不是最大值) 或者 (是最大值但是只臭鼬)
+                const keep = queue.filter(c => c.power !== maxVal || c.id === 'skunk');
+                const kicked = queue.filter(c => c.power === maxVal && c.id !== 'skunk');
+                
+                Store.gameQueue = keep;
+                if (kicked.length > 0) UI.log(`💨 臭鼬熏走了: ${kicked.map(v=>v.power).join(',')}`);
             }
         }
 
-        // 2. 🦜 鹦鹉：淘汰指定的动物
+        // 2. 🦜 鹦鹉：指定淘汰
         else if (card.id === 'parrot' && extra && extra.targetUid) {
-            const victimIdx = queue.findIndex(c => c.uid === extra.targetUid);
-            if (victimIdx !== -1) {
-                const v = queue[victimIdx];
-                queue.splice(victimIdx, 1);
-                UI.log(`🦜 鹦鹉骂跑了 [${v.power}]`);
+            const idx = queue.findIndex(c => c.uid === extra.targetUid);
+            if (idx !== -1) {
+                const v = queue[idx];
+                queue.splice(idx, 1);
+                UI.log(`🦜 鹦鹉骂跑了 [${v.power}] ${getCardName(v.id)}`);
             }
         }
 
-        // 3. 🦘 袋鼠：跳过1或2个
+        // 3. 🦘 袋鼠：插队
         else if (card.id === 'kanga' && extra && extra.jump) {
-            // 袋鼠现在在队尾 (index = length-1)
-            const jump = extra.jump; // 1 或 2
+            // 刚入场的袋鼠肯定在最后
             const kangaIdx = queue.length - 1;
-            let targetIdx = kangaIdx - jump;
-            if (targetIdx < 0) targetIdx = 0; // 最多跳到第一位
+            // 计算目标位置
+            let targetIdx = kangaIdx - extra.jump;
+            if (targetIdx < 0) targetIdx = 0;
             
-            // 移动数组元素
             if (targetIdx < kangaIdx) {
-                const kanga = queue.pop(); // 拿出来
-                queue.splice(targetIdx, 0, kanga); // 插进去
-                UI.log(`🦘 袋鼠跳过了 ${jump} 个位置`);
+                const kanga = queue.pop(); // 取出
+                queue.splice(targetIdx, 0, kanga); // 插入
+                UI.log(`🦘 袋鼠往前跳了 ${extra.jump} 步`);
             }
         }
     },
 
-    // 🚪 门禁逻辑：满5结算
+    // 🚪 门禁：满5结算
     checkGate() {
         if (Store.gameQueue.length === 5) {
-            UI.log("🚪 门口满了！开始结算...");
+            UI.log("🚪 门口满了(5人)，开始结算！");
             
-            const toBar = Store.gameQueue.slice(0, 2); // 前2个
-            const remain = Store.gameQueue.slice(2, 4); // 中间2个留着
-            const toTrash = Store.gameQueue.slice(4, 5); // 最后1个踢掉
+            const toBar = Store.gameQueue.slice(0, 2);   // 前2进酒吧
+            const remain = Store.gameQueue.slice(2, 4);  // 中2留守
+            const toTrash = Store.gameQueue.slice(4, 5); // 尾1踢掉
 
-            // 简单的动画效果（日志代替）
-            toBar.forEach(c => UI.log(`🍻 [${c.power}] 进入了酒吧！`));
-            toTrash.forEach(c => UI.log(`🗑️ [${c.power}] 被踢进了垃圾桶！`));
+            toBar.forEach(c => UI.log(`🍻 [${c.power}] ${getCardName(c.id)} 进酒吧了！`));
+            toTrash.forEach(c => UI.log(`🗑️ [${c.power}] ${getCardName(c.id)} 被踢掉了！`));
 
-            Store.gameQueue = remain; // 更新队列
+            Store.gameQueue = remain; 
         }
     },
 
