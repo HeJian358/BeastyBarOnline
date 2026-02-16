@@ -16,10 +16,13 @@ export const Network = {
             debug: 2, 
             config: {
                 iceServers: [
-                    // 1. Google 的 STUN 服务器
+                    // 1. Google STUN (香港用户首选)
                     { urls: 'stun:stun.l.google.com:19302' },
+
+                    // 2. 腾讯 STUN (国内用户/VPN不稳定时的备选)
+                    { urls: 'stun:stun.qq.com:3478' },
                     
-                    // 2. OpenRelay 的免费 TURN 服务器 (穿墙关键)
+                    // 3. OpenRelay TURN (穿透防火墙的兜底方案)
                     {
                         urls: "turn:openrelay.metered.ca:80",
                         username: "openrelayproject",
@@ -113,3 +116,4 @@ export const Network = {
         return this.connections.size + 1; 
     }
 };
+
