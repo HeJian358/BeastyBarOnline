@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Beasty Bar P2P</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🦁</text></svg>">
+    <link rel="stylesheet" href="style.css">
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+</head>
+<body>
+
+    <div class="setup-panel" id="setup-ui">
+        <h2>🦁 Beasty Bar 等待大厅</h2>
+        
+        <div class="step-box">
+            <input type="text" id="nickname" placeholder="输入昵称 (最多10字)" maxlength="10">
+            <button id="btn-init-user">1. 确认昵称</button>
+        </div>
+        
+        <div class="step-box" id="conn-box" style="display:none; margin-top:15px; border-top:1px dashed #ccc; padding-top:15px;">
+            <div style="display: flex; gap: 5px; margin-bottom: 10px;">
+                <input type="text" id="target-id" placeholder="输入房主ID" disabled>
+                <button id="btn-copy" style="display:none; background:#6c5ce7;">复制我的ID</button>
+            </div>
+            
+            <div id="action-area">
+                <button id="btn-join" disabled>2. 加入战局</button>
+                <button id="btn-ready" style="display:none; background:#f1c40f; color:#333;">✋ 准备</button>
+                <button id="btn-start" style="display:none; background:#e74c3c;">🚀 开始游戏</button>
+            </div>
+        </div>
+
+        <div class="player-list-box">
+            <h4>大厅玩家 (<span id="p-count">0</span>/4)</h4>
+            <ul id="player-status-list">
+                <li style="color:#999; text-align:center;">等待连接...</li>
+            </ul>
+        </div>
+
+        <div class="status-line">
+            系统状态: <span id="my-status">未初始化</span>
+        </div>
+    </div>
+
+    <div id="game-board" style="display:none;">
+        
+        <div id="in-game-players" class="ingame-player-bar">
+            </div>
+
+        <div class="top-bar">
+            <div id="turn-indicator" style="font-size: 1.2em;">等待开始...</div>
+            <div id="deck-info">牌库: 0</div>
+        </div>
+
+        <div class="queue-container">
+            <div class="gate-label">THE GATE (酒吧)</div>
+            <div class="queue-zone" id="game-queue"></div>
+            <div class="trash-label">TRASH (踢出)</div>
+        </div>
+
+        <div class="hand-zone" id="my-hand"></div>
+    </div>
+
+    <div class="log-box" id="sys-log">> 系统启动...</div>
+
+    <script type="module" src="./js/main.js"></script>
+</body>
+</html>

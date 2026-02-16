@@ -1,0 +1,99 @@
+export const Network = {
+    peer: null,
+    connections: new Map(),
+    myId: null,
+    
+    // 防洪记录表
+    floodHistory: new Map(),
+
+    // 【关键修改】这里增加了 onError 参数
+    init(onOpen, onData, onError) {
+        // 如果之前有旧连接，先销毁
+        if (this.peer) {
+            this.peer.destroy();
+        }
+
+        this.peer = new Peer({ 
+            debug: 2, // 2级日志，方便看问题
+            config: {
+                'iceServers': [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' }
+                ]
+            }
+        });
+
+        this.peer.on('open', (id) => {
+            this.myId = id;
+            onOpen(id);
+        });
+
+        this.peer.on('connection', (conn) => this.handleConn(conn, onData));
+        
+        // 【关键修复】这里把错误抛回给 UI，否则按钮会一直卡在"连接中"
+        this.peer.on('error', (err) => {
+            console.error("PeerJS 报错:", err);
+            if (onError) onError(err);
+        });
+
+        this.peer.on('disconnected', () => {
+            console.warn("与信令服务器断开，尝试重连...");
+            this.peer.reconnect();
+        });
+    },
+
+    connect(targetId, onData) {
+        if (!targetId || targetId === this.myId) return;
+        if (this.connections.has(targetId)) return;
+        
+        const conn = this.peer.connect(targetId);
+        this.handleConn(conn, onData);
+    },
+
+    handleConn(conn, onData) {
+        conn.on('open', () => {
+            if (this.connections.has(conn.peer)) return;
+            this.connections.set(conn.peer, conn);
+            console.log("已连接:", conn.peer);
+            onData({ type: 'SYS_USER_JOINED', peerId: conn.peer });
+        });
+
+        conn.on('data', (data) => {
+            if (this.isSpam(data)) return;
+            onData(data);
+        });
+        
+        conn.on('close', () => {
+            this.connections.delete(conn.peer);
+            onData({ type: 'SYS_USER_LEFT', peerId: conn.peer });
+        });
+        
+        conn.on('error', (err) => console.error("连接异常:", err));
+    },
+
+    isSpam(data) {
+        const msgType = data.type;
+        const limitTypes = ['SYNC_NICK', 'SYS_USER_JOINED', 'GAME_INIT'];
+        if (!limitTypes.includes(msgType)) return false;
+
+        const fingerprint = msgType + JSON.stringify(data);
+        const now = Date.now();
+        const lastTime = this.floodHistory.get(fingerprint) || 0;
+
+        if (now - lastTime < 1000) return true; 
+
+        this.floodHistory.set(fingerprint, now);
+        if (this.floodHistory.size > 100) this.floodHistory.clear();
+        return false;
+    },
+
+    broadcast(data) {
+        this.connections.forEach(c => {
+            if (c.open) c.send(data);
+        });
+    },
+
+    getPlayerCount() {
+        return this.connections.size + 1; 
+    }
+};
