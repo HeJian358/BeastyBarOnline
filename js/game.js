@@ -88,4 +88,5 @@ export const Game = {
             btnReady.style.backgroundColor = Store.isReady ? "#bdc3c7" : "#f1c40f";
         }
     }
+
 };
